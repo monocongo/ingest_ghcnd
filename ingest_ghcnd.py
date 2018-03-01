@@ -33,7 +33,7 @@ def _generate_ncmp_inventory(ghcnd_inventory_file):
                      usecols=['station_id', 'lat', 'lon', 'name'])
     
     station_files = []
-    with open('C:/home/data/ghcnd/ncmp/P0_Station_List.txt', 'w') as stations_file:
+    with open('C:/home/rstudio/wmo_ncmp/P0_Station_List.txt', 'w') as stations_file:
         for index, row in df.iterrows():
             station_file_name = _generate_file_name(row['station_id'])
             if len(station_file_name) != 27:
@@ -41,13 +41,13 @@ def _generate_ncmp_inventory(ghcnd_inventory_file):
             stations_file.write(station_file_name + '   ' + str(row['lat']) + '  ' + str(row['lon']) + '\n')
             
 #-----------------------------------------------------------------------------------------------------------------------
-def _read_ghcnd(station_file):
-    
-    # read the file into a pandas DataFrame
-    column_specs = [(0, 11),     # ID
-                    (11, 15),    # year
+def _read_ghcnd(station_file,
+                variable_name):
+        
+    # specify the fixed-width fields of a single line of data
+    # these GHCN-D fields are described at https://www1.ncdc.noaa.gov/pub/data/ghcn/daily/readme.txt
+    column_specs = [(11, 15),    # year
                     (15, 17),    # month
-                    (17, 21),    # variable (referred to as element in the GHCND readme.txt)
                     (21, 26),    # value for day 1
                     (29, 34),    # value for day 2
                     (37, 42),    # value for day 3
@@ -80,16 +80,31 @@ def _read_ghcnd(station_file):
                     (253, 258),  # value for day 30
                     (261, 266)]  # value for day 31
     
-    column_names = ['station_id', 'year', 'month', 'variable',
+    # give some meaningful column names
+    column_names = ['year', 'month',
                     '01', '02', '03', '04', '05', '06', '07', '08', '09', '10',  
                     '11', '12', '13', '14', '15', '16', '17', '18', '19', '20',  
                     '21', '22', '23', '24', '25', '26', '27', '28', '29', '30',  '31']
        
+    # read the file into a pandas DataFrame
     df = pd.read_fwf(station_file, 
                      header=None,
                      colspecs=column_specs,
                      names=column_names,
                      na_values=-9999)
+    
+    # melt the individual day columns into a single day column
+    df = pd.melt(df,
+                 id_vars=['year', 'month'],
+                 value_vars=['01', '02', '03', '04', '05', '06', '07', '08', '09', '10',
+                             '11', '12', '13', '14', '15', '16', '17', '18', '19', '20',
+                             '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31'],
+                 var_name='day', 
+                 value_name=variable_name)
+
+    # GHCND values are in tenths of mm for precipitation, and in tenths of degree Celsius for temperature
+    # NCMP requires units in whole mm and degrees C so we divide the original GHCND values by 10
+    df[variable_name] = df[variable_name] / 10.0
     
     return df
     
@@ -99,31 +114,23 @@ def _write_ncmp_file(station_id,
                      file_tmin, 
                      file_tmax):
 
-    # get Pandas dataframes for each variable
-    df_prcp = _read_ghcnd(file_prcp)
-    df_tmin = _read_ghcnd(file_tmin)
-    df_tmax = _read_ghcnd(file_tmax)
+    # get Pandas DataFrames for each variable
+    df_prcp = _read_ghcnd(file_prcp, 'prcp')
+    df_tmin = _read_ghcnd(file_tmin, 'tmin')
+    df_tmax = _read_ghcnd(file_tmax, 'tmax')
+        
+    interim_df = pd.merge(df_prcp, df_tmax, on=['year', 'month', 'day'])
+    final_df = pd.merge(interim_df, df_tmin, on=['year', 'month', 'day'])
+              
+    # write the data from the three DataFrames on each line of the output file
+    file_name = 'C:/home/rstudio/wmo_ncmp/AO_Input_Data/' +_generate_file_name(station_id)
     
-    # write the data from the three dataframes on each line of the output file
-    file_name = _generate_file_name(station_id)
-    with open(file_name, 'w') as station_file:
-        for index, row in df_prcp.iterrows():
-            station_file.write(' '.join((station_id, 
-                                         row['year'], 
-                                         row['month'], 
-                                         row['day'], 
-                                         row['precip_valueFIXME'], 
-                                         df_tmax.iloc[index]['tmaxFIXME'], 
-                                         df_tmin.iloc[index]['tminFIXME'])))
+    final_df.to_csv(file_name, index=False, na_rep='-99.9', sep=' ', header=False)
         
 #-----------------------------------------------------------------------------------------------------------------------
 if __name__ == '__main__':
-    
-    #TODO get these options as command line arguments, use argparse
-    dir_prcp = 'C:/home/data/ghcnd/prcp/'
-    dir_tmin = 'C:/home/data/ghcnd/tmin/'
-    dir_tmax = 'C:/home/data/ghcnd/tmax/'
-    
+
+    # get sorted list of GHCN-D station files for the three variables    
     files_prcp = sorted(glob.glob('C:/home/data/ghcnd/prcp/USW*.precip.dly'))
     files_tmin = sorted(glob.glob('C:/home/data/ghcnd/tmin/USW*.mintmp.dly'))
     files_tmax = sorted(glob.glob('C:/home/data/ghcnd/tmax/USW*.maxtmp.dly'))
@@ -131,7 +138,10 @@ if __name__ == '__main__':
     # write the station inventory file
     _generate_ncmp_inventory('C:/home/data/ghcnd/metadata/ghcn-d_short_jb.inv')
     
-    #FIXME assumes same number of files for each variable, verify this first
+    if (len(files_prcp) != len(files_tmin)) or (len(files_prcp) != len(files_tmax)):
+        raise ValueError('Non-matching sets of files')
+
+    # loop over each station    
     for i in range(len(files_prcp)):
         
         file_prcp = files_prcp[i]
@@ -143,6 +153,7 @@ if __name__ == '__main__':
         id_tmin = os.path.splitext(os.path.basename(file_tmin))[0].split('.')[0]
         id_tmax = os.path.splitext(os.path.basename(file_tmax))[0].split('.')[0]
         if (id_prcp != id_tmin) or (id_prcp != id_tmax):
-            raise ValueError('Non-matching files in file list(s)')
-        
+            raise ValueError('Non-matching files in file lists')
+ 
+        # write the station's data into a single file suitable as input for WMO's NCMP software       
         _write_ncmp_file(id_prcp, file_prcp, file_tmin, file_tmax)
