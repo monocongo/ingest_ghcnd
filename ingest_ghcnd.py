@@ -1,6 +1,8 @@
+from datetime import datetime
 import glob
-import pandas as pd
+import numpy as np
 import os
+import pandas as pd
 
 #-----------------------------------------------------------------------------------------------------------------------
 def _generate_file_name(station_id):
@@ -43,7 +45,15 @@ def _generate_ncmp_inventory(ghcnd_inventory_file):
 #-----------------------------------------------------------------------------------------------------------------------
 def _read_ghcnd(station_file,
                 variable_name):
-        
+    """
+    Reads a GHCN-D ASCII file into a Pandas DataFrame, sorted by date and with all non-valid dates removed.
+    
+    :param station_file: GHCN-Daily ASCII file
+    :param variable_name: climatological variable name to use for the output DataFrame's column containing 
+                          the actual data values (for example precipitation, min/max temperature, etc.)
+    :return: Pandas DataFrame containing columns for year, month, day, and the climatological variable
+    """
+    
     # specify the fixed-width fields of a single line of data
     # these GHCN-D fields are described at https://www1.ncdc.noaa.gov/pub/data/ghcn/daily/readme.txt
     column_specs = [(11, 15),    # year
@@ -92,8 +102,8 @@ def _read_ghcnd(station_file,
                      colspecs=column_specs,
                      names=column_names,
                      na_values=-9999)
-    
-    # melt the individual day columns into a single day column
+
+    # melt the individual day columns into a single day column, turn it into an integer (melt creates it as an object)
     df = pd.melt(df,
                  id_vars=['year', 'month'],
                  value_vars=['01', '02', '03', '04', '05', '06', '07', '08', '09', '10',
@@ -102,6 +112,20 @@ def _read_ghcnd(station_file,
                  var_name='day', 
                  value_name=variable_name)
 
+    # convert the year/month/day columns into datetime objects we'll use for sorting
+    cols = ['year', 'month', 'day']
+    df['date'] = pd.to_datetime(df[cols], errors='coerce')
+    
+    # since we coerced errors to NAs above we can now drop all the NAs,
+    #  which will get rid of rows with nonexistent dates such as February 30th 
+    df = df.dropna(subset=['date'])
+
+    # sort into chronological order
+    df = df.sort_values('date', ascending=True)
+
+    # drop the date column now since it was only needed for the sort
+    df = df.drop(labels='date', axis=1)
+    
     # GHCND values are in tenths of mm for precipitation, and in tenths of degree Celsius for temperature
     # NCMP requires units in whole mm and degrees C so we divide the original GHCND values by 10
     df[variable_name] = df[variable_name] / 10.0
@@ -123,7 +147,7 @@ def _write_ncmp_file(station_id,
     final_df = pd.merge(interim_df, df_tmin, on=['year', 'month', 'day'])
               
     # write the data from the three DataFrames on each line of the output file
-    file_name = 'C:/home/rstudio/wmo_ncmp/AO_Input_Data/' +_generate_file_name(station_id)
+    file_name = 'C:/home/rstudio/wmo_ncmp/A0_Input_Data/' +_generate_file_name(station_id)
     
     final_df.to_csv(file_name, index=False, na_rep='-99.9', sep=' ', header=False)
         
